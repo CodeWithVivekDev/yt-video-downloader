@@ -15,6 +15,15 @@ const ffmpegPath = ffmpegInstaller.path;
 console.log('--- YouTube Video Downloader Backend ---');
 console.log('Using static ffmpeg from installer:', ffmpegPath);
 
+// Check if the PO Token provider plugin is available
+const { execSync } = require('child_process');
+try {
+  execSync('python -c "import bgutil_ytdlp_pot_provider"', { stdio: 'ignore' });
+  console.log('PO Token plugin: bgutil-ytdlp-pot-provider DETECTED (auto-bypass enabled)');
+} catch (_) {
+  console.warn('PO Token plugin: NOT FOUND — YouTube may block datacenter IPs. Install bgutil-ytdlp-pot-provider.');
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -51,7 +60,6 @@ const CLIENT_INFO_MAX_REQUESTS = envNumber('CLIENT_INFO_MAX_REQUESTS', 3);
 const INFO_REQUEST_MIN_GAP_MS = envNumber('INFO_REQUEST_MIN_GAP_MS', 12 * 1000);
 const YTDLP_PROXY_URL = process.env.YTDLP_PROXY_URL || process.env.QUOTAGUARDSTATIC_URL || '';
 const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || '';
-const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN || '';
 
 function normalizeYouTubeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
@@ -170,25 +178,16 @@ function addYtdlpNetworkOptions(args) {
   }
 }
 
-// Build the extractor-args string including PO token if configured
+// Build the extractor-args string for a given player client.
+// PO tokens are handled automatically by the bgutil-ytdlp-pot-provider plugin
+// if it is installed — no manual token injection needed.
 function buildExtractorArgs(playerClient) {
-  let extractorArg = `youtube:player_client=${playerClient}`;
-  if (YTDLP_PO_TOKEN) {
-    extractorArg += `;po_token=${YTDLP_PO_TOKEN}`;
-  }
-  return extractorArg;
+  return `youtube:player_client=${playerClient}`;
 }
 
 function safeYtdlpArgs(args) {
   const valueToMask = new Set(['--proxy', '--cookies']);
-  return args.map((arg, index) => {
-    if (valueToMask.has(args[index - 1])) return '[configured]';
-    // Mask PO token values in log output
-    if (typeof arg === 'string' && arg.includes('po_token=')) {
-      return arg.replace(/po_token=[^;]+/, 'po_token=[configured]');
-    }
-    return arg;
-  });
+  return args.map((arg, index) => valueToMask.has(args[index - 1]) ? '[configured]' : arg);
 }
 
 // Extraction strategies ordered by likelihood of success on SERVER/datacenter IPs.
