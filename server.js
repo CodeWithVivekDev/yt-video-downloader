@@ -51,6 +51,7 @@ const CLIENT_INFO_MAX_REQUESTS = envNumber('CLIENT_INFO_MAX_REQUESTS', 3);
 const INFO_REQUEST_MIN_GAP_MS = envNumber('INFO_REQUEST_MIN_GAP_MS', 12 * 1000);
 const YTDLP_PROXY_URL = process.env.YTDLP_PROXY_URL || process.env.QUOTAGUARDSTATIC_URL || '';
 const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || '';
+const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN || '';
 
 function normalizeYouTubeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
@@ -169,22 +170,38 @@ function addYtdlpNetworkOptions(args) {
   }
 }
 
+// Build the extractor-args string including PO token if configured
+function buildExtractorArgs(playerClient) {
+  let extractorArg = `youtube:player_client=${playerClient}`;
+  if (YTDLP_PO_TOKEN) {
+    extractorArg += `;po_token=${YTDLP_PO_TOKEN}`;
+  }
+  return extractorArg;
+}
+
 function safeYtdlpArgs(args) {
   const valueToMask = new Set(['--proxy', '--cookies']);
-  return args.map((arg, index) => valueToMask.has(args[index - 1]) ? '[configured]' : arg);
+  return args.map((arg, index) => {
+    if (valueToMask.has(args[index - 1])) return '[configured]';
+    // Mask PO token values in log output
+    if (typeof arg === 'string' && arg.includes('po_token=')) {
+      return arg.replace(/po_token=[^;]+/, 'po_token=[configured]');
+    }
+    return arg;
+  });
 }
 
 // Extraction strategies ordered by likelihood of success on SERVER/datacenter IPs.
-// tv_embedded and android_vr are the most reliable as they bypass YouTube's
-// web-based bot detection which blocks standard datacenter IPs aggressively.
+// web_creator and mweb are currently the most reliable for datacenter IPs (2026).
+// Older clients like tv_embedded and android_vr are now mostly patched by YouTube.
 const EXTRACTION_STRATEGIES = [
+  { name: 'web_creator', playerClient: 'web_creator', browser: null },
+  { name: 'mweb', playerClient: 'mweb', browser: null },
+  { name: 'ios', playerClient: 'ios', browser: null },
   { name: 'tv_embedded', playerClient: 'tv_embedded', browser: null },
   { name: 'android_vr', playerClient: 'android_vr', browser: null },
-  { name: 'ios', playerClient: 'ios', browser: null },
   { name: 'android', playerClient: 'android', browser: null },
   { name: 'tv', playerClient: 'tv', browser: null },
-  { name: 'mweb', playerClient: 'mweb', browser: null },
-  { name: 'web_creator', playerClient: 'web_creator', browser: null },
   { name: 'default', playerClient: 'default', browser: null },
 ];
 
@@ -196,17 +213,16 @@ function spawnYtdlpInfo(videoUrl, strategy) {
       '-j',
       '--no-playlist',
       '--force-ipv4',
-      '--user-agent', 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+      '--user-agent', 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36',
       '--add-header', 'Accept-Language:en-US,en;q=0.9',
       '--referer', 'https://www.youtube.com/'
     ];
 
-    // Add player client — always set explicitly for clarity
+    // Add player client with PO token if available
     if (strategy.playerClient && strategy.playerClient !== 'default') {
-      args.push('--extractor-args', `youtube:player_client=${strategy.playerClient}`);
+      args.push('--extractor-args', buildExtractorArgs(strategy.playerClient));
     } else {
-      // For 'default', let yt-dlp choose but pass tv_embedded as a fallback hint
-      args.push('--extractor-args', 'youtube:player_client=default,tv_embedded');
+      args.push('--extractor-args', buildExtractorArgs('default,web_creator'));
     }
 
     // Add browser cookies only if strategy calls for it
@@ -511,7 +527,7 @@ function runDownloadJob(jobId, url) {
   let args = [];
   const extraArgs = [
     '--force-ipv4',
-    '--user-agent', 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+    '--user-agent', 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--referer', 'https://www.youtube.com/'
   ];
@@ -519,7 +535,7 @@ function runDownloadJob(jobId, url) {
   // Use the last strategy that worked during info fetch
   const dlStrategy = lastWorkingStrategy || EXTRACTION_STRATEGIES[0];
   if (dlStrategy.playerClient && dlStrategy.playerClient !== 'default') {
-    extraArgs.push('--extractor-args', `youtube:player_client=${dlStrategy.playerClient}`);
+    extraArgs.push('--extractor-args', buildExtractorArgs(dlStrategy.playerClient));
   }
   if (dlStrategy.browser) {
     extraArgs.push('--cookies-from-browser', dlStrategy.browser);

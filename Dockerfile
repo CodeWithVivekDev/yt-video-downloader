@@ -1,4 +1,4 @@
-FROM node:18-bullseye-slim
+FROM node:20-bullseye-slim
 
 # Install Python 3, pip, and ffmpeg (which provides ffprobe as well)
 RUN apt-get update && apt-get install -y \
@@ -8,8 +8,10 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp via pip (always get latest version for best YouTube compatibility)
-RUN pip3 install --upgrade yt-dlp
+# Install latest yt-dlp nightly for best YouTube compatibility on datacenter IPs
+RUN pip3 install --upgrade "yt-dlp[default]" && \
+    python -m yt_dlp --version && \
+    ffmpeg -version | head -1
 
 # Set up working directory
 WORKDIR /usr/src/app
