@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp via pip (which requires python3)
-RUN pip3 install yt-dlp
+# Install yt-dlp via pip (always get latest version for best YouTube compatibility)
+RUN pip3 install --upgrade yt-dlp
 
 # Set up working directory
 WORKDIR /usr/src/app

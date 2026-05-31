@@ -36,18 +36,18 @@ const jobs = new Map();
 let lastWorkingStrategy = null; // Cache the strategy that last worked
 let rateLimitCooldownUntil = 0; // Timestamp when we can retry after a 429
 
-// Extraction strategies ordered by likelihood of success
-// 'default' is tried first because it works reliably without sign-in on most machines.
-// Other player clients (web_creator, mweb, ios) often trigger "Sign in" or format errors.
+// Extraction strategies ordered by likelihood of success on SERVER/datacenter IPs.
+// tv_embedded and android_vr are the most reliable as they bypass YouTube's
+// web-based bot detection which blocks standard datacenter IPs aggressively.
 const EXTRACTION_STRATEGIES = [
-  { name: 'default-no-cookies', playerClient: 'default', browser: null },
-  { name: 'ios-no-cookies', playerClient: 'ios', browser: null },
-  { name: 'android-no-cookies', playerClient: 'android', browser: null },
-  { name: 'tv-no-cookies', playerClient: 'tv', browser: null },
-  { name: 'web_creator-no-cookies', playerClient: 'web_creator', browser: null },
-  { name: 'mweb-no-cookies', playerClient: 'mweb', browser: null },
-  { name: 'default-chrome', playerClient: 'default', browser: 'chrome' },
-  { name: 'default-edge', playerClient: 'default', browser: 'edge' },
+  { name: 'tv_embedded', playerClient: 'tv_embedded', browser: null },
+  { name: 'android_vr', playerClient: 'android_vr', browser: null },
+  { name: 'ios', playerClient: 'ios', browser: null },
+  { name: 'android', playerClient: 'android', browser: null },
+  { name: 'tv', playerClient: 'tv', browser: null },
+  { name: 'mweb', playerClient: 'mweb', browser: null },
+  { name: 'web_creator', playerClient: 'web_creator', browser: null },
+  { name: 'default', playerClient: 'default', browser: null },
 ];
 
 // Helper to spawn yt-dlp for info extraction with a specific strategy
@@ -58,16 +58,17 @@ function spawnYtdlpInfo(videoUrl, strategy) {
       '-j',
       '--no-playlist',
       '--force-ipv4',
-      '--no-check-certificates',
-      '--prefer-insecure',
-      '--no-warnings',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+      '--user-agent', 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
       '--referer', 'https://www.youtube.com/'
     ];
 
-    // Add player client if not default
+    // Add player client — always set explicitly for clarity
     if (strategy.playerClient && strategy.playerClient !== 'default') {
       args.push('--extractor-args', `youtube:player_client=${strategy.playerClient}`);
+    } else {
+      // For 'default', let yt-dlp choose but pass tv_embedded as a fallback hint
+      args.push('--extractor-args', 'youtube:player_client=default,tv_embedded');
     }
 
     // Add browser cookies only if strategy calls for it
