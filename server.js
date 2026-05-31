@@ -388,11 +388,68 @@ app.get('/api/info', async (req, res) => {
 
   if (!successResult) {
     let errMsg = 'Could not fetch video info. Please check the URL and try again.';
+    let info = null;
+
     if (hit429) {
-      errMsg = 'YouTube has temporarily blocked requests from this server IP. Please wait before trying again. Avoid clicking "Analyze" repeatedly - each click can make the wait longer.';
-    } else if (lastError && lastError.stderr && lastError.stderr.includes('Sign in to confirm')) {
-      errMsg = 'YouTube is temporarily blocking this request. Please wait a minute and try again. If this keeps happening, try a different video URL.';
+      console.warn('[Metadata] yt-dlp hit 429. Attempting Invidious fallback...');
+      try {
+        const videoIdMatch = videoUrl.match(/(?:v=|youtu\.be\/)([^&]+)/);
+        if (videoIdMatch && videoIdMatch[1]) {
+          const invId = videoIdMatch[1];
+          // Use fetch (Node.js 18+) to get fallback metadata from a public Invidious instance
+          const invReq = await fetch(`https://inv.thepixora.com/api/v1/videos/${invId}`);
+          if (invReq.ok) {
+            const invData = await invReq.json();
+            // Map Invidious formatStreams to yt-dlp format style for compatibility
+            const mappedFormats = [];
+            if (invData.formatStreams) {
+              invData.formatStreams.forEach(fs => {
+                mappedFormats.push({
+                  url: fs.url,
+                  vcodec: 'avc1',
+                  acodec: 'mp4a',
+                  height: parseInt(fs.resolution) || 0,
+                  ext: 'mp4'
+                });
+              });
+            }
+            if (invData.adaptiveFormats) {
+              invData.adaptiveFormats.forEach(af => {
+                if (af.type && af.type.includes('audio')) {
+                  mappedFormats.push({
+                    url: af.url,
+                    vcodec: 'none',
+                    acodec: 'mp4a',
+                    abr: parseInt(af.bitrate) || 128000,
+                    ext: 'm4a'
+                  });
+                }
+              });
+            }
+            info = {
+              id: invData.videoId,
+              title: invData.title,
+              uploader: invData.author,
+              duration: invData.lengthSeconds,
+              view_count: invData.viewCount,
+              thumbnail: invData.videoThumbnails && invData.videoThumbnails.length > 0 ? invData.videoThumbnails[0].url : '',
+              formats: mappedFormats
+            };
+            console.log('[Metadata] Invidious fallback succeeded.');
+            successResult = { stdout: JSON.stringify(info) };
+          }
+        }
+      } catch (fallbackErr) {
+        console.error('[Metadata] Invidious fallback failed:', fallbackErr);
+      }
     }
+
+    if (!successResult) {
+      if (hit429) {
+        errMsg = 'YouTube has temporarily blocked requests from this server IP. Please wait before trying again. Avoid clicking "Analyze" repeatedly - each click can make the wait longer.';
+      } else if (lastError && lastError.stderr && lastError.stderr.includes('Sign in to confirm')) {
+        errMsg = 'YouTube is temporarily blocking this request. Please wait a minute and try again. If this keeps happening, try a different video URL.';
+      }
     console.error(`[Metadata Failed] ${errMsg}`);
     if (hit429) {
       const waitSec = Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1000));
@@ -440,7 +497,8 @@ app.get('/api/info', async (req, res) => {
       viewCount: info.view_count ? formatViews(info.view_count) : '0',
       thumbnail: bestThumbnail,
       availableResolutions,
-      originalUrl: videoUrl
+      originalUrl: videoUrl,
+      rawFormats: info.formats || []
     };
 
     console.log(`[Metadata Result] Title: "${info.title}", Resolutions: [${availableResolutions.join(', ')}]`);
@@ -453,352 +511,118 @@ app.get('/api/info', async (req, res) => {
 });
 
 /**
- * API Endpoint: Initiate background download job
+ * API Endpoint: Direct Stream Proxy
+ * Proxies the direct YouTube video/audio stream to the client browser.
  */
-app.post('/api/download', (req, res) => {
-  const { url, format, quality, title } = req.body;
+app.get('/api/stream', async (req, res) => {
+  const { url, format, quality, title } = req.query;
   
   if (!url || !format || !quality) {
-    return res.status(400).json({ error: 'Missing required download parameters' });
+    return res.status(400).send('Missing required download parameters');
   }
 
   const videoUrl = normalizeYouTubeUrl(url);
   if (!videoUrl) {
-    return res.status(400).json({ error: 'Please provide a valid YouTube video URL.' });
+    return res.status(400).send('Invalid YouTube URL');
   }
 
-  const allowedVideoQualities = new Set(['1080p', '720p', '480p', '360p']);
-  const allowedAudioQualities = new Set(['320k', '192k', '128k']);
-  const validFormat = format === 'video' || format === 'audio';
-  const validQuality = format === 'video'
-    ? allowedVideoQualities.has(quality)
-    : allowedAudioQualities.has(quality);
-
-  if (!validFormat || !validQuality) {
-    return res.status(400).json({ error: 'Invalid download format or quality.' });
+  // Find the video in our info cache to get the direct streaming URLs
+  const cacheKey = getVideoCacheKey(videoUrl);
+  const cachedInfo = getCachedInfo(cacheKey);
+  
+  if (!cachedInfo || !cachedInfo.rawFormats || cachedInfo.rawFormats.length === 0) {
+    return res.status(400).send('Video metadata expired or not found. Please click Analyze Video again.');
   }
 
-  const now = Date.now();
-  if (now < rateLimitCooldownUntil) {
-    const waitSec = Math.ceil((rateLimitCooldownUntil - now) / 1000);
-    setRetryHeaders(res, waitSec);
-    return res.status(429).json({
-      error: `YouTube rate limited your IP. Please wait ${waitSec} seconds before trying again.`,
-      retryAfter: waitSec
-    });
-  }
+  // Select the best direct URL based on requested quality
+  let streamUrl = null;
+  let ext = format === 'video' ? 'mp4' : 'm4a';
+  
+  if (format === 'video') {
+    // For video, we only support pre-merged formats (vcodec && acodec) to avoid ffmpeg
+    const targetHeight = parseInt(quality) || 720;
+    const suitableFormats = cachedInfo.rawFormats.filter(f => 
+      f.vcodec !== 'none' && 
+      f.acodec !== 'none' && 
+      f.height <= targetHeight &&
+      f.ext === 'mp4'
+    ).sort((a, b) => b.height - a.height); // Highest quality first
 
-  // Generate unique ID
-  const jobId = Date.now().toString() + Math.random().toString(36).substring(2, 7);
-  
-  const job = {
-    id: jobId,
-    status: 'initializing',
-    progress: 0,
-    format,
-    quality,
-    title: title || 'Video Download',
-    filePath: '',
-    error: null,
-    process: null
-  };
-  
-  jobs.set(jobId, job);
-  console.log(`[Job Queued] ID: ${jobId}, Format: ${format}, Quality: ${quality}, Title: "${job.title}"`);
-  
-  // Start job execution immediately in background
-  runDownloadJob(jobId, videoUrl);
-  
-  res.json({ jobId });
-});
-
-/**
- * Core Downloader: Spawns yt-dlp process and monitors progress
- */
-function runDownloadJob(jobId, url) {
-  const job = jobs.get(jobId);
-  if (!job) return;
-  
-  const ext = job.format === 'video' ? 'mp4' : 'mp3';
-  const outPathPattern = path.join(tempDir, `${jobId}.%(ext)s`);
-  job.filePath = path.join(tempDir, `${jobId}.${ext}`);
-  
-  let args = [];
-  const extraArgs = [
-    '--force-ipv4',
-    '--user-agent', 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36',
-    '--add-header', 'Accept-Language:en-US,en;q=0.9',
-    '--referer', 'https://www.youtube.com/'
-  ];
-
-  // Use the last strategy that worked during info fetch
-  const dlStrategy = lastWorkingStrategy || EXTRACTION_STRATEGIES[0];
-  if (dlStrategy.playerClient && dlStrategy.playerClient !== 'default') {
-    extraArgs.push('--extractor-args', buildExtractorArgs(dlStrategy.playerClient));
-  }
-  if (dlStrategy.browser) {
-    extraArgs.push('--cookies-from-browser', dlStrategy.browser);
-  }
-  addYtdlpNetworkOptions(extraArgs);
-  
-  if (job.format === 'video') {
-    // Select formats: best video matching chosen resolution (prefer H.264 mp4) + best audio stream (prefer m4a)
-    let formatSelector = 'bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height<=1080]';
-    if (job.quality === '720p') {
-      formatSelector = 'bestvideo[ext=mp4][vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]';
-    } else if (job.quality === '480p') {
-      formatSelector = 'bestvideo[ext=mp4][vcodec^=avc1][height<=480]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[height<=480]';
-    } else if (job.quality === '360p') {
-      formatSelector = 'bestvideo[ext=mp4][vcodec^=avc1][height<=360]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[height<=360]';
-    }
-    
-    args = [
-      '-m', 'yt_dlp',
-      '--ffmpeg-location', ffmpegPath,
-      ...extraArgs,
-      '-f', formatSelector,
-      '--merge-output-format', 'mp4',
-      '-o', outPathPattern,
-      '--no-playlist',
-      url
-    ];
-  } else {
-    // Audio Mode: Download best audio and extract/convert to MP3
-    const bitrate = job.quality === '320k' ? '320k' : job.quality === '192k' ? '192k' : '128k';
-    args = [
-      '-m', 'yt_dlp',
-      '--ffmpeg-location', ffmpegPath,
-      ...extraArgs,
-      '-x',
-      '--audio-format', 'mp3',
-      '--audio-quality', bitrate,
-      '-o', outPathPattern,
-      '--no-playlist',
-      url
-    ];
-  }
-  
-  console.log(`[Job Process] Spawning: python ${safeYtdlpArgs(args).join(' ')}`);
-  const child = spawn('python', args);
-  job.process = child;
-  let jobStderr = '';
-  
-  // yt-dlp download percentage regex — matches both "45.2%" and "100%"
-  const progressRegex = /\[download\]\s+(\d+(?:\.\d+)?)%/;
-  
-  child.stdout.on('data', (data) => {
-    const line = data.toString();
-    
-    // Parse progress percentage
-    const match = line.match(progressRegex);
-    if (match) {
-      const percent = parseFloat(match[1]);
-      // Map download phase to 0-90% of total task completion
-      const scaledProgress = Math.min(Math.round(percent * 0.9), 90);
-      job.progress = scaledProgress;
-      job.status = 'downloading';
-    } else if (line.includes('[Merger]')) {
-      // 95% indicates merging video and audio streams
-      job.status = 'merging';
-      job.progress = 95;
-    } else if (line.includes('[ExtractAudio]')) {
-      // Audio conversion starting
-      job.status = 'converting';
-      job.progress = 93;
-    } else if (line.includes('[ffmpeg]')) {
-      // Active transcoding/converting
-      job.status = 'converting';
-      job.progress = 96;
-    }
-  });
-  
-  child.stderr.on('data', (data) => {
-    const line = data.toString();
-    jobStderr += line;
-    console.error(`[Job ${jobId} stderr]:`, line.trim());
-
-    // yt-dlp also writes progress to stderr — parse it here too
-    const stderrMatch = line.match(progressRegex);
-    if (stderrMatch) {
-      const percent = parseFloat(stderrMatch[1]);
-      const scaledProgress = Math.min(Math.round(percent * 0.9), 90);
-      job.progress = scaledProgress;
-      job.status = 'downloading';
-    } else if (line.includes('[Merger]')) {
-      job.status = 'merging';
-      job.progress = 95;
-    } else if (line.includes('[ExtractAudio]')) {
-      job.status = 'converting';
-      job.progress = 93;
-    } else if (line.includes('[ffmpeg]')) {
-      job.status = 'converting';
-      job.progress = 96;
-    }
-  });
-  
-  // Safety timeout: kill stuck jobs after 10 minutes
-  const jobTimeout = setTimeout(() => {
-    const timeoutJob = jobs.get(jobId);
-    if (timeoutJob && timeoutJob.status !== 'completed' && timeoutJob.status !== 'failed') {
-      console.warn(`[Job Timeout] Job ${jobId} timed out after 10 minutes. Killing process.`);
-      if (timeoutJob.process) timeoutJob.process.kill();
-      timeoutJob.status = 'failed';
-      timeoutJob.error = 'Download timed out after 10 minutes. Please try again.';
-    }
-  }, 10 * 60 * 1000);
-
-  child.on('close', (code) => {
-    clearTimeout(jobTimeout);
-    console.log(`[Job Close] ID: ${jobId}, Exit Code: ${code}`);
-    
-    const currentJob = jobs.get(jobId);
-    if (!currentJob) return;
-
-    // Check if file exists regardless of exit code
-    // yt-dlp may exit with code 1 on non-fatal warnings but still produce a valid file
-    const checkFileExists = () => {
-      if (fs.existsSync(currentJob.filePath)) {
-        currentJob.status = 'completed';
-        currentJob.progress = 100;
-        return true;
-      }
-      // Search for alternate extensions
-      const possibleExts = currentJob.format === 'video'
-        ? ['mp4', 'mkv', 'webm', 'mov', 'avi']
-        : ['mp3', 'm4a', 'opus', 'ogg', 'webm', 'wav'];
-      for (const ext of possibleExts) {
-        const altPath = path.join(tempDir, `${jobId}.${ext}`);
-        if (fs.existsSync(altPath)) {
-          console.log(`[Job ${jobId}] Found output at alternate extension: .${ext}`);
-          currentJob.filePath = altPath;
-          currentJob.status = 'completed';
-          currentJob.progress = 100;
-          return true;
-        }
-      }
-      return false;
-    };
-
-    if (code === 0) {
-      if (!checkFileExists()) {
-        currentJob.status = 'failed';
-        currentJob.error = 'Download completed but the output file was not found on disk or merging failed.';
-      }
+    if (suitableFormats.length > 0) {
+      streamUrl = suitableFormats[0].url;
     } else {
-      // Non-zero exit: still check if the file was created (warnings can cause non-zero exit)
-      if (!checkFileExists()) {
-        currentJob.status = 'failed';
-        if (isYouTubeRateLimit(jobStderr)) {
-          rateLimitCooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
-          currentJob.error = 'YouTube has temporarily blocked downloads from this server IP. Please wait before trying again.';
-        } else {
-          currentJob.error = `Download process failed (exit code ${code}). Try a different quality or format.`;
-        }
+      // Fallback: Just get any pre-merged mp4
+      const anyPreMerged = cachedInfo.rawFormats.find(f => f.vcodec !== 'none' && f.acodec !== 'none' && f.ext === 'mp4');
+      if (anyPreMerged) streamUrl = anyPreMerged.url;
+    }
+  } else {
+    // For audio, we want the highest quality audio-only stream (preferably m4a)
+    const suitableFormats = cachedInfo.rawFormats.filter(f => 
+      f.vcodec === 'none' && 
+      f.acodec !== 'none' &&
+      f.ext === 'm4a'
+    ).sort((a, b) => (b.abr || 0) - (a.abr || 0));
+
+    if (suitableFormats.length > 0) {
+      streamUrl = suitableFormats[0].url;
+    } else {
+      // Fallback: any audio only
+      const anyAudio = cachedInfo.rawFormats.find(f => f.vcodec === 'none' && f.acodec !== 'none');
+      if (anyAudio) {
+        streamUrl = anyAudio.url;
+        ext = anyAudio.ext || 'm4a';
       }
     }
-    
-    currentJob.process = null;
-  });
-}
-
-/**
- * API Endpoint: Real-time SSE status reporter
- */
-app.get('/api/download/progress/:jobId', (req, res) => {
-  const jobId = req.params.jobId;
-  const job = jobs.get(jobId);
-  
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
   }
 
-  // Set required Server-Sent Events headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-
-  console.log(`[SSE Open] Progress listener connected for Job ID: ${jobId}`);
-
-  const sendUpdate = () => {
-    const currentJob = jobs.get(jobId);
-    if (!currentJob) {
-      res.write(`data: ${JSON.stringify({ status: 'failed', error: 'Job tracking state lost' })}\n\n`);
-      res.end();
-      clearInterval(intervalId);
-      return;
-    }
-
-    res.write(`data: ${JSON.stringify({
-      status: currentJob.status,
-      progress: currentJob.progress,
-      error: currentJob.error
-    })}\n\n`);
-
-    // Terminate connection if job terminates
-    if (currentJob.status === 'completed' || currentJob.status === 'failed') {
-      console.log(`[SSE Close] Job ${jobId} ended with status: ${currentJob.status}`);
-      res.end();
-      clearInterval(intervalId);
-    }
-  };
-
-  // Immediate send
-  sendUpdate();
-
-  // Send update every 400ms
-  const intervalId = setInterval(sendUpdate, 400);
-
-  // Safely clear intervals on client close
-  req.on('close', () => {
-    clearInterval(intervalId);
-  });
-});
-
-/**
- * API Endpoint: Serve file and auto-delete
- */
-app.get('/api/download/file/:jobId', (req, res) => {
-  const jobId = req.params.jobId;
-  const job = jobs.get(jobId);
-  
-  if (!job || job.status !== 'completed') {
-    return res.status(404).send('File is not ready or download job was not found.');
+  if (!streamUrl) {
+    return res.status(404).send(`Could not find a direct stream for ${format} at ${quality}. Please try a different quality.`);
   }
 
-  const filePath = job.filePath;
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).send('File was missing from the server storage.');
-  }
-
-  // Sanitize title for browser download headers
-  const safeTitle = job.title.replace(/[\\/:*?"<>|]/g, '');
-  // Use the actual file extension (may differ from requested format due to fallback)
-  const ext = path.extname(filePath).replace('.', '') || (job.format === 'video' ? 'mp4' : 'mp3');
+  const safeTitle = (title || 'Video Download').replace(/[\\/:*?"<>|]/g, '');
   const downloadFileName = `${safeTitle}.${ext}`;
 
-  console.log(`[Serving File] ID: ${jobId}, File: "${downloadFileName}"`);
-
+  console.log(`[Stream Proxy] Starting proxy stream for "${downloadFileName}"`);
+  
   res.setHeader('Content-Disposition', contentDisposition(downloadFileName));
   
-  // Send file to browser
-  res.sendFile(filePath, (err) => {
-    if (err) {
-      console.error(`[Serve Error] Failed to stream file to user:`, err);
-    }
-
-    // Proactive Cleanup: immediately delete temp file from server storage
-    fs.unlink(filePath, (unlinkErr) => {
-      if (unlinkErr) {
-        console.error(`[Cleanup Error] Failed to remove temp file: ${filePath}`, unlinkErr);
-      } else {
-        console.log(`[Cleanup Success] Deleted temp file: ${filePath}`);
-      }
+  try {
+    const { Readable } = require('stream');
+    const fetchRes = await fetch(streamUrl, { 
+      headers: { 
+        // Emulate a standard browser request
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Referer': 'https://www.youtube.com/'
+      } 
     });
-
-    // Delete job mapping
-    jobs.delete(jobId);
-  });
+    
+    if (!fetchRes.ok) {
+      console.error(`[Stream Error] Upstream returned ${fetchRes.status}: ${fetchRes.statusText}`);
+      return res.status(502).send('Upstream streaming server returned an error: ' + fetchRes.statusText);
+    }
+    
+    // Forward relevant headers to the client
+    if (fetchRes.headers.get('content-length')) {
+      res.setHeader('Content-Length', fetchRes.headers.get('content-length'));
+    }
+    if (fetchRes.headers.get('content-type')) {
+      res.setHeader('Content-Type', fetchRes.headers.get('content-type'));
+    }
+    
+    // Pipe the Web Stream from fetch into the Node.js Express Response
+    Readable.fromWeb(fetchRes.body).pipe(res);
+    
+    req.on('close', () => {
+      // Browser disconnected early
+      console.log(`[Stream Proxy] Client disconnected from stream: "${downloadFileName}"`);
+    });
+  } catch (err) {
+    console.error('[Stream Proxy Error]', err);
+    if (!res.headersSent) {
+      res.status(500).send('Error proxying media stream from upstream servers.');
+    }
+  }
 });
 
 /**

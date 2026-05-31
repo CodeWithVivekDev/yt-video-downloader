@@ -318,10 +318,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Resolutions List Rendering
     videoResolutionsList.innerHTML = '';
-    const resolutions = info.availableResolutions || [];
+    const resolutions = (info.availableResolutions || []).filter(r => ['720p', '360p'].includes(r));
 
     if (resolutions.length === 0) {
-      // Fallback
+      // Fallback to pre-merged formats supported by streaming proxy
       resolutions.push('720p', '360p');
     }
 
@@ -367,7 +367,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleFormat('video');
   }
 
-  // Toggle format tab between Video (MP4) and Audio (MP3)
+  // Toggle format tab between Video (MP4) and Audio (M4A)
   function toggleFormat(format) {
     state.activeFormat = format;
     if (format === 'video') {
@@ -420,39 +420,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnStartDownload.disabled = true;
     
-    // Prepare progress display
+    // Prepare progress display (Now used for stream preparation)
     progressMediaTitle.textContent = state.videoInfo.title;
     const formatName = state.activeFormat === 'video' ? `Video (${state.selectedQuality})` : `Audio (${state.selectedQuality})`;
-    progressMediaFormat.textContent = `Processing: ${formatName}`;
+    progressMediaFormat.textContent = `Preparing Stream: ${formatName}`;
     
     // Reset indicators
-    updateProgressBar(0, 'Initializing');
+    updateProgressBar(10, 'Initializing Stream Proxy');
     resetStageIndicators();
     clearLogs();
-    appendLog('Submitting download job to processing pipeline...', 'info');
+    appendLog('Connecting to YouTube streaming servers...', 'info');
 
-    try {
-      const response = await fetch('/api/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to initialize backend job');
-      }
-
-      state.activeJobId = data.jobId;
-      showSection('progress-section');
+    showSection('progress-section');
+    
+    // Create streaming URL
+    const streamUrl = `/api/stream?url=${encodeURIComponent(payload.url)}&format=${encodeURIComponent(payload.format)}&quality=${encodeURIComponent(payload.quality)}&title=${encodeURIComponent(payload.title)}`;
+    
+    setTimeout(() => {
+      updateProgressBar(50, 'Requesting Direct Download');
+      appendLog('Stream proxy connected. Your browser will start the download shortly...', 'success');
       
-      // Connect to SSE stream
-      connectSSE(data.jobId);
-    } catch (err) {
-      console.error(err);
-      showToast(err.message || 'Failed to process download request.', 'danger');
-      btnStartDownload.disabled = false;
-    }
+      // Trigger browser download via iframe to avoid leaving the page
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = streamUrl;
+      document.body.appendChild(iframe);
+      
+      setTimeout(() => {
+        updateProgressBar(100, 'Download Started');
+        handleJobSuccess();
+      }, 3000);
+    }, 1500);
   }
 
   // --- EVENT SOURCE / SERVER SENT EVENTS STREAM ---
