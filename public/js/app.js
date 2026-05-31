@@ -11,9 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
     activeFormat: 'video', // 'video' | 'audio'
     selectedQuality: null,
     activeJobId: null,
-    eventSource: null,
     infoRetryUntil: 0,
-    infoRetryTimer: null
+    infoRetryTimer: null,
+    lastStreamUrl: null
   };
 
   // --- DOM SELECTORS ---
@@ -435,6 +435,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Create streaming URL
     const streamUrl = `/api/stream?url=${encodeURIComponent(payload.url)}&format=${encodeURIComponent(payload.format)}&quality=${encodeURIComponent(payload.quality)}&title=${encodeURIComponent(payload.title)}`;
+    state.lastStreamUrl = streamUrl;
     
     setTimeout(() => {
       updateProgressBar(50, 'Requesting Direct Download');
@@ -451,90 +452,6 @@ document.addEventListener('DOMContentLoaded', () => {
         handleJobSuccess();
       }, 3000);
     }, 1500);
-  }
-
-  // --- EVENT SOURCE / SERVER SENT EVENTS STREAM ---
-  function connectSSE(jobId) {
-    if (state.eventSource) {
-      state.eventSource.close();
-    }
-
-    appendLog('Starting download... Please wait.', 'info');
-    
-    const es = new EventSource(`/api/download/progress/${jobId}`);
-    state.eventSource = es;
-    let sseErrorCount = 0;
-    const SSE_MAX_ERRORS = 10;
-
-    es.onmessage = (event) => {
-      sseErrorCount = 0; // Reset on successful message
-      try {
-        const data = JSON.parse(event.data);
-        const { status, progress, error } = data;
-
-        // Process status logs and stages
-        updateProgressUI(status, progress, error);
-
-        if (status === 'completed') {
-          es.close();
-          handleJobSuccess();
-        } else if (status === 'failed') {
-          es.close();
-          handleJobFailure(error || 'Process finished with errors.');
-        }
-      } catch (err) {
-        console.error('SSE JSON Error:', err);
-      }
-    };
-
-    es.onerror = (err) => {
-      sseErrorCount++;
-      console.error('SSE Error callback:', err);
-      if (sseErrorCount >= SSE_MAX_ERRORS) {
-        es.close();
-        appendLog('Lost connection to download stream. Please try again.', 'error');
-        handleJobFailure('Connection to the server was lost. Please try again.');
-      } else {
-        appendLog('Warning: Still trying to connect to download stream...', 'error');
-      }
-    };
-  }
-
-  // Update progress bar and terminal logs
-  function updateProgressUI(status, progress, error) {
-    // Status clean names
-    let statusLabel = 'Working...';
-    if (status === 'initializing') {
-      statusLabel = 'Starting...';
-      setStageActive('stage-download');
-    } else if (status === 'downloading') {
-      statusLabel = `Downloading (${progress}%)`;
-      setStageActive('stage-download');
-    } else if (status === 'merging') {
-      statusLabel = 'Combining Files...';
-      setStageActive('stage-process');
-    } else if (status === 'converting') {
-      statusLabel = 'Converting to MP3...';
-      setStageActive('stage-process');
-    } else if (status === 'completed') {
-      statusLabel = 'Done!';
-      setStageActive('stage-ready');
-    } else if (status === 'failed') {
-      statusLabel = 'Error';
-    }
-
-    updateProgressBar(progress, statusLabel);
-
-    // Logging triggers to reduce log bloat
-    if (status === 'initializing') {
-      appendLog('Preparing video on server...', 'normal');
-    } else if (status === 'downloading') {
-      appendLog(`Downloading... ${progress}% completed.`, 'normal');
-    } else if (status === 'merging') {
-      appendLog('Combining video and audio streams... This might take a minute.', 'info');
-    } else if (status === 'converting') {
-      appendLog('Converting audio format to high quality MP3 sound...', 'info');
-    }
   }
 
   // Set the visual progress circle and bar
@@ -593,8 +510,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- JOB COMPLETION FLOW ---
   function handleJobSuccess() {
-    appendLog('Download successfully finished! Loading file...', 'success');
-    showToast('Download complete! Starting file download...', 'success');
+    appendLog('Download successfully started! Check your browser downloads.', 'success');
+    showToast('Download started! You can safely download another video.', 'success');
 
     // Trigger celebratory confetti if library loaded
     if (typeof confetti === 'function') {
@@ -605,27 +522,16 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    const downloadUrl = `/api/download/file/${state.activeJobId}`;
+    const downloadUrl = state.lastStreamUrl;
     
     // Auto-fill success card details
-    const ext = state.activeFormat === 'video' ? 'mp4' : 'mp3';
+    const ext = state.activeFormat === 'video' ? 'mp4' : 'm4a';
     successMediaTitle.textContent = `${state.videoInfo.title}.${ext}`;
-    const metaString = state.activeFormat === 'video' ? `Video Quality: ${state.selectedQuality}` : `Audio Quality: ${state.selectedQuality} (MP3)`;
-    successMediaMeta.textContent = `${metaString} | Processing Completed`;
+    const metaString = state.activeFormat === 'video' ? `Video Quality: ${state.selectedQuality}` : `Audio Quality: ${state.selectedQuality} (M4A)`;
+    successMediaMeta.textContent = `${metaString} | Direct Stream Initiated`;
     
     // Bind buttons
     btnDownloadFile.href = downloadUrl;
-    
-    // Auto launch direct streaming file download via hidden link click
-    setTimeout(() => {
-      const tempLink = document.createElement('a');
-      tempLink.href = downloadUrl;
-      tempLink.setAttribute('download', '');
-      document.body.appendChild(tempLink);
-      tempLink.click();
-      document.body.removeChild(tempLink);
-    }, 1200);
-
 
     // Jump to success
     setTimeout(() => {
