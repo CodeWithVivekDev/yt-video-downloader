@@ -190,8 +190,8 @@ app.get('/api/info', async (req, res) => {
       // If it's a 429 rate limit, stop immediately — more requests make it worse
       if (stderrStr.includes('HTTP Error 429') || stderrStr.includes('Too Many Requests')) {
         hit429 = true;
-        rateLimitCooldownUntil = Date.now() + 60000; // 60 second cooldown
-        console.warn('[Rate Limit] Got 429 — entering 60s cooldown. Stopping further attempts.');
+        rateLimitCooldownUntil = Date.now() + 3 * 60 * 1000; // 3 minute cooldown
+        console.warn('[Rate Limit] Got 429 — entering 3min cooldown. Stopping further attempts.');
       }
 
       // If browser cookie DB doesn't exist, skip silently (don't count as YouTube error)
@@ -200,6 +200,8 @@ app.get('/api/info', async (req, res) => {
         continue;
       }
 
+      // Small delay between retries to avoid hammering YouTube
+      await new Promise(resolve => setTimeout(resolve, 1500));
       lastError = err;
     }
   }
@@ -311,7 +313,8 @@ function runDownloadJob(jobId, url) {
   let args = [];
   const extraArgs = [
     '--force-ipv4',
-    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+    '--user-agent', 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+    '--add-header', 'Accept-Language:en-US,en;q=0.9',
     '--referer', 'https://www.youtube.com/'
   ];
 
