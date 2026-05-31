@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StreamVault - Easy YouTube Downloader by Vivek Kumar</title>
+  <!-- SEO Meta Tags -->
+  <meta name="description" content="Download YouTube videos and audios easily. Created by Vivek Kumar. Simple, fast, and free.">
+  <meta name="keywords" content="youtube downloader, download youtube, youtube to mp3, vivek kumar">
+  <meta name="author" content="Vivek Kumar">
+  
+  <!-- Premium Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Canvas for Celebration Confetti -->
+  <canvas id="confetti-canvas"></canvas>
+
+  <!-- Background Decorative Blurs -->
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+  <div class="bg-glow bg-glow-3"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-icon-wrapper">
+          <i class="fa-solid fa-play logo-icon"></i>
+          <div class="logo-pulse"></div>
+        </div>
+        <div class="logo-text">
+          <h1>Stream<span>Vault</span></h1>
+          <p>EASY DOWNLOADER • BY VIVEK KUMAR</p>
+        </div>
+      </div>
+      
+      <!-- Theme Switcher & Status Badge -->
+      <div class="header-actions">
+        <button id="theme-toggle" class="btn-theme" title="Change Theme">
+          <i class="fa-solid fa-sun icon-light"></i>
+          <i class="fa-solid fa-moon icon-dark"></i>
+          <span class="theme-text">Light Mode</span>
+        </button>
+        <div class="header-badge">
+          <span class="pulse-indicator"></span>
+          <span class="badge-text">Active</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="app-main">
+      
+      <!-- STEP 1: Search & Input Panel -->
+      <section id="search-section" class="app-card active">
+        <div class="card-header">
+          <h2><i class="fa-solid fa-link accent-icon"></i> Paste YouTube Link</h2>
+          <p>Paste a YouTube video link below to download it as video or audio</p>
+        </div>
+        
+        <div class="input-group-wrapper">
+          <div class="input-inner">
+            <i class="fa-brands fa-youtube input-yt-icon"></i>
+            <input type="text" id="video-url-input" placeholder="Paste link here... (e.g. https://www.youtube.com/watch?v=...)" autocomplete="off">
+            <div class="input-actions">
+              <button id="btn-paste" class="btn-input-action" title="Paste from clipboard">
+                <i class="fa-regular fa-clipboard"></i> Paste
+              </button>
+              <button id="btn-clear" class="btn-input-action hidden" title="Clear">
+                <i class="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+          </div>
+          <button id="btn-fetch" class="btn-primary">
+            <span>Find Video</span>
+            <i class="fa-solid fa-magnifying-glass"></i>
+          </button>
+        </div>
+
+        <!-- Skeleton Loading Loader -->
+        <div id="info-loader" class="skeleton-loader hidden">
+          <div class="skeleton-row">
+            <div class="skeleton-thumbnail"></div>
+            <div class="skeleton-details">
+              <div class="skeleton-bar title-bar"></div>
+              <div class="skeleton-bar author-bar"></div>
+              <div class="skeleton-flex">
+                <div class="skeleton-bar small-bar"></div>
+                <div class="skeleton-bar small-bar"></div>
+              </div>
+            </div>
+          </div>
+          <p class="loader-status-text"><i class="fa-solid fa-spinner fa-spin"></i> Searching for your video... Please wait.</p>
+        </div>
+      </section>
+
+      <!-- STEP 2: Media Display & Configuration Options -->
+      <section id="config-section" class="app-card hidden">
+        <div class="back-navigation">
+          <button id="btn-config-back" class="btn-text-only">
+            <i class="fa-solid fa-chevron-left"></i> Go Back
+          </button>
+        </div>
+
+        <div class="config-layout">
+          <!-- Video Info Sub-Card -->
+          <div class="media-preview-card">
+            <div class="thumbnail-wrapper">
+              <img id="media-thumbnail" src="" alt="Video Thumbnail">
+              <span id="media-duration" class="duration-tag">0:00</span>
+              <div class="thumbnail-overlay">
+                <i class="fa-solid fa-play"></i>
+              </div>
+            </div>
+            <div class="media-details">
+              <h3 id="media-title">Video Title</h3>
+              <p id="media-uploader" class="uploader-name">
+                <i class="fa-solid fa-circle-check verification-icon"></i> Channel Name
+              </p>
+              <div class="media-meta-badges">
+                <span id="media-views" class="meta-badge">
+                  <i class="fa-regular fa-eye"></i> 0 views
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Configuration Panel -->
+          <div class="download-options-card">
+            <div class="format-toggle">
+              <button id="tab-video" class="tab-btn active" data-format="video">
+                <i class="fa-solid fa-video"></i> Video (MP4)
+              </button>
+              <button id="tab-audio" class="tab-btn" data-format="audio">
+                <i class="fa-solid fa-music"></i> Audio (MP3)
+              </button>
+            </div>
+
+            <!-- Video Quality Container -->
+            <div id="video-options" class="options-container active">
+              <label class="options-label">Choose Video Quality</label>
+              <div id="video-resolutions-list" class="qualities-grid">
+                <!-- Dynamically populated -->
+              </div>
+            </div>
+
+            <!-- Audio Quality Container -->
+            <div id="audio-options" class="options-container">
+              <label class="options-label">Choose Audio Quality</label>
+              <div class="qualities-grid">
+                <button class="quality-card active" data-quality="320k">
+                  <div class="quality-card-header">
+                    <span class="quality-title">Best Sound (320 kbps)</span>
+                    <span class="badge hq">High Quality</span>
+                  </div>
+                  <div class="quality-meta">Crystal clear audio, best for music</div>
+                </button>
+                <button class="quality-card" data-quality="192k">
+                  <div class="quality-card-header">
+                    <span class="quality-title">Good Sound (192 kbps)</span>
+                  </div>
+                  <div class="quality-meta">Standard quality, smaller file size</div>
+                </button>
+                <button class="quality-card" data-quality="128k">
+                  <div class="quality-card-header">
+                    <span class="quality-title">Basic Sound (128 kbps)</span>
+                  </div>
+                  <div class="quality-meta">Eco quality, saves storage space</div>
+                </button>
+              </div>
+            </div>
+
+            <button id="btn-start-download" class="btn-primary start-dl-btn">
+              <span>Download Now</span>
+              <i class="fa-solid fa-download"></i>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 3: Real-time Progress Tracking -->
+      <section id="progress-section" class="app-card hidden">
+        <div class="progress-container-box">
+          <div class="progress-header-info">
+            <span class="processing-badge"><i class="fa-solid fa-arrows-spin fa-spin"></i> Downloading</span>
+            <h3 id="progress-media-title">Video Title</h3>
+            <p id="progress-media-format">Preparing your file...</p>
+          </div>
+
+          <!-- Progress Rings -->
+          <div class="progress-radial-wrapper">
+            <svg class="progress-ring" width="160" height="160">
+              <circle class="progress-ring-circle-bg" stroke="rgba(255,255,255,0.06)" stroke-width="8" fill="transparent" r="70" cx="80" cy="80" />
+              <circle id="progress-ring-indicator" class="progress-ring-circle" stroke="url(#progress-gradient)" stroke-width="8" stroke-dasharray="440" stroke-dashoffset="440" stroke-linecap="round" fill="transparent" r="70" cx="80" cy="80" />
+              <defs>
+                <linearGradient id="progress-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#FF0077" />
+                  <stop offset="100%" stop-color="#E50914" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <div class="progress-ring-text">
+              <span id="progress-percent-text">0%</span>
+              <span id="progress-status-slug">Starting...</span>
+            </div>
+          </div>
+
+          <div class="linear-progress-track">
+            <div id="progress-linear-bar" class="linear-progress-bar" style="width: 0%"></div>
+          </div>
+
+          <div class="progress-stage-indicators">
+            <div id="stage-download" class="stage-step active">
+              <div class="stage-icon"><i class="fa-solid fa-cloud-arrow-down"></i></div>
+              <span>1. Downloading</span>
+            </div>
+            <div id="stage-process" class="stage-step">
+              <div class="stage-icon"><i class="fa-solid fa-gears"></i></div>
+              <span>2. Processing</span>
+            </div>
+            <div id="stage-ready" class="stage-step">
+              <div class="stage-icon"><i class="fa-solid fa-circle-check"></i></div>
+              <span>3. Ready</span>
+            </div>
+          </div>
+
+          <!-- Log console output -->
+          <div class="console-box">
+            <div class="console-header">
+              <span>Download Details</span>
+              <span class="terminal-dot green"></span>
+            </div>
+            <div id="console-logs" class="console-lines">
+              <div class="log-line info">> Connecting to server...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4: Success & Download Finish Panel -->
+      <section id="success-section" class="app-card hidden">
+        <div class="success-box">
+          <div class="success-icon-wrapper">
+            <div class="success-icon-bg"></div>
+            <i class="fa-solid fa-circle-check success-check-icon"></i>
+          </div>
+          <h2>Download Ready!</h2>
+          <p>Your file has been processed successfully. If the download didn't start automatically, click the button below.</p>
+
+          <div class="success-file-card">
+            <i class="fa-solid fa-file-arrow-down success-file-icon"></i>
+            <div class="success-file-details">
+              <h4 id="success-media-title">Video Title.mp4</h4>
+              <p id="success-media-meta">Quality: Ready</p>
+            </div>
+          </div>
+
+          <div class="success-actions">
+            <a id="btn-download-file" href="" class="btn-primary glow-btn" download>
+              <span>Save File</span>
+              <i class="fa-solid fa-download"></i>
+            </a>
+            <button id="btn-download-another" class="btn-secondary">
+              <span>Download Another Video</span>
+              <i class="fa-solid fa-rotate-left"></i>
+            </button>
+          </div>
+        </div>
+      </section>
+
+
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>Created by Vivek Kumar • © 2026 StreamVault</p>
+      <div class="footer-links">
+        <span><i class="fa-solid fa-shield-halved"></i> Safe & Secure</span>
+        <span>•</span>
+        <span><i class="fa-solid fa-bolt"></i> High Speed</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Toast Notification Toaster -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Confetti script for celebration -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <!-- Main application script -->
+  <script src="js/app.js"></script>
+</body>
+</html>
