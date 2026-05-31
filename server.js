@@ -450,14 +450,15 @@ app.get('/api/info', async (req, res) => {
       } else if (lastError && lastError.stderr && lastError.stderr.includes('Sign in to confirm')) {
         errMsg = 'YouTube is temporarily blocking this request. Please wait a minute and try again. If this keeps happening, try a different video URL.';
       }
-    console.error(`[Metadata Failed] ${errMsg}`);
-    if (hit429) {
-      const waitSec = Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1000));
-      setRetryHeaders(res, waitSec);
-      return res.status(429).json({ error: errMsg, retryAfter: waitSec });
-    }
+      console.error(`[Metadata Failed] ${errMsg}`);
+      if (hit429) {
+        const waitSec = Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1000));
+        setRetryHeaders(res, waitSec);
+        return res.status(429).json({ error: errMsg, retryAfter: waitSec });
+      }
 
-    return res.status(500).json({ error: errMsg });
+      return res.status(500).json({ error: errMsg });
+    }
   }
 
   try {
