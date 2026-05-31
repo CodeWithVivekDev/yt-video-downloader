@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: streamvault
+    env: docker
+    dockerfilePath: ./Dockerfile
+    region: ohio
+    plan: free
+    autoDeploy: true
