@@ -41,6 +41,9 @@ let rateLimitCooldownUntil = 0; // Timestamp when we can retry after a 429
 // Other player clients (web_creator, mweb, ios) often trigger "Sign in" or format errors.
 const EXTRACTION_STRATEGIES = [
   { name: 'default-no-cookies', playerClient: 'default', browser: null },
+  { name: 'ios-no-cookies', playerClient: 'ios', browser: null },
+  { name: 'android-no-cookies', playerClient: 'android', browser: null },
+  { name: 'tv-no-cookies', playerClient: 'tv', browser: null },
   { name: 'web_creator-no-cookies', playerClient: 'web_creator', browser: null },
   { name: 'mweb-no-cookies', playerClient: 'mweb', browser: null },
   { name: 'default-chrome', playerClient: 'default', browser: 'chrome' },
