@@ -416,42 +416,60 @@ function runDownloadJob(jobId, url) {
     }
   });
   
+  // Safety timeout: kill stuck jobs after 10 minutes
+  const jobTimeout = setTimeout(() => {
+    const timeoutJob = jobs.get(jobId);
+    if (timeoutJob && timeoutJob.status !== 'completed' && timeoutJob.status !== 'failed') {
+      console.warn(`[Job Timeout] Job ${jobId} timed out after 10 minutes. Killing process.`);
+      if (timeoutJob.process) timeoutJob.process.kill();
+      timeoutJob.status = 'failed';
+      timeoutJob.error = 'Download timed out after 10 minutes. Please try again.';
+    }
+  }, 10 * 60 * 1000);
+
   child.on('close', (code) => {
+    clearTimeout(jobTimeout);
     console.log(`[Job Close] ID: ${jobId}, Exit Code: ${code}`);
     
     const currentJob = jobs.get(jobId);
     if (!currentJob) return;
-    
-    if (code === 0) {
-      // Double check if file exists at expected path
+
+    // Check if file exists regardless of exit code
+    // yt-dlp may exit with code 1 on non-fatal warnings but still produce a valid file
+    const checkFileExists = () => {
       if (fs.existsSync(currentJob.filePath)) {
         currentJob.status = 'completed';
         currentJob.progress = 100;
-      } else {
-        // yt-dlp may have saved with a different extension — search for the file
-        const possibleExts = currentJob.format === 'video' 
-          ? ['mp4', 'mkv', 'webm', 'mov', 'avi'] 
-          : ['mp3', 'm4a', 'opus', 'ogg', 'webm', 'wav'];
-        let found = false;
-        for (const ext of possibleExts) {
-          const altPath = path.join(tempDir, `${jobId}.${ext}`);
-          if (fs.existsSync(altPath)) {
-            console.log(`[Job ${jobId}] Found output at alternate extension: .${ext}`);
-            currentJob.filePath = altPath;
-            currentJob.status = 'completed';
-            currentJob.progress = 100;
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          currentJob.status = 'failed';
-          currentJob.error = 'Download completed but the output file was not found on disk or merging failed.';
+        return true;
+      }
+      // Search for alternate extensions
+      const possibleExts = currentJob.format === 'video'
+        ? ['mp4', 'mkv', 'webm', 'mov', 'avi']
+        : ['mp3', 'm4a', 'opus', 'ogg', 'webm', 'wav'];
+      for (const ext of possibleExts) {
+        const altPath = path.join(tempDir, `${jobId}.${ext}`);
+        if (fs.existsSync(altPath)) {
+          console.log(`[Job ${jobId}] Found output at alternate extension: .${ext}`);
+          currentJob.filePath = altPath;
+          currentJob.status = 'completed';
+          currentJob.progress = 100;
+          return true;
         }
       }
+      return false;
+    };
+
+    if (code === 0) {
+      if (!checkFileExists()) {
+        currentJob.status = 'failed';
+        currentJob.error = 'Download completed but the output file was not found on disk or merging failed.';
+      }
     } else {
-      currentJob.status = 'failed';
-      currentJob.error = `Download process failed (exit code ${code}). Try a different quality or format.`;
+      // Non-zero exit: still check if the file was created (warnings can cause non-zero exit)
+      if (!checkFileExists()) {
+        currentJob.status = 'failed';
+        currentJob.error = `Download process failed (exit code ${code}). Try a different quality or format.`;
+      }
     }
     
     currentJob.process = null;
