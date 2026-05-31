@@ -8,6 +8,7 @@ const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.set('trust proxy', 1);
 
 // Resolve static ffmpeg path
 const ffmpegPath = ffmpegInstaller.path;
@@ -35,6 +36,143 @@ const jobs = new Map();
 
 let lastWorkingStrategy = null; // Cache the strategy that last worked
 let rateLimitCooldownUntil = 0; // Timestamp when we can retry after a 429
+const infoCache = new Map();
+const clientInfoAttempts = new Map();
+
+function envNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const RATE_LIMIT_COOLDOWN_MS = envNumber('YOUTUBE_RATE_LIMIT_COOLDOWN_MS', 5 * 60 * 1000);
+const INFO_CACHE_TTL_MS = envNumber('INFO_CACHE_TTL_MS', 10 * 60 * 1000);
+const CLIENT_INFO_WINDOW_MS = envNumber('CLIENT_INFO_WINDOW_MS', 60 * 1000);
+const CLIENT_INFO_MAX_REQUESTS = envNumber('CLIENT_INFO_MAX_REQUESTS', 3);
+const INFO_REQUEST_MIN_GAP_MS = envNumber('INFO_REQUEST_MIN_GAP_MS', 12 * 1000);
+const YTDLP_PROXY_URL = process.env.YTDLP_PROXY_URL || process.env.QUOTAGUARDSTATIC_URL || '';
+const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || '';
+
+function normalizeYouTubeUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+
+  try {
+    const trimmed = rawUrl.trim();
+    const urlWithProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(urlWithProtocol);
+    const host = parsed.hostname.toLowerCase();
+    const isYouTubeHost = host === 'youtu.be' ||
+      host.endsWith('.youtu.be') ||
+      host === 'youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'youtube-nocookie.com' ||
+      host.endsWith('.youtube-nocookie.com');
+
+    if (!['http:', 'https:'].includes(parsed.protocol) || !isYouTubeHost) {
+      return null;
+    }
+
+    parsed.hash = '';
+    return parsed.toString();
+  } catch (_err) {
+    return null;
+  }
+}
+
+function getVideoCacheKey(videoUrl) {
+  try {
+    const parsed = new URL(videoUrl);
+    const host = parsed.hostname.toLowerCase();
+    const pathParts = parsed.pathname.split('/').filter(Boolean);
+
+    if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+      return pathParts[0] || videoUrl;
+    }
+
+    const directId = parsed.searchParams.get('v');
+    if (directId) return directId;
+
+    if (['shorts', 'embed', 'live'].includes(pathParts[0]) && pathParts[1]) {
+      return pathParts[1];
+    }
+  } catch (_err) {
+    // Fall through to full URL cache key.
+  }
+
+  return videoUrl;
+}
+
+function getCachedInfo(cacheKey) {
+  const cached = infoCache.get(cacheKey);
+  if (!cached) return null;
+
+  if (Date.now() > cached.expiresAt) {
+    infoCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.data;
+}
+
+function setCachedInfo(cacheKey, data) {
+  infoCache.set(cacheKey, {
+    data,
+    expiresAt: Date.now() + INFO_CACHE_TTL_MS
+  });
+
+  if (infoCache.size > 100) {
+    infoCache.delete(infoCache.keys().next().value);
+  }
+}
+
+function getClientKey(req) {
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function getClientThrottleWaitSeconds(clientKey) {
+  const now = Date.now();
+  const cutoff = now - CLIENT_INFO_WINDOW_MS;
+  const attempts = (clientInfoAttempts.get(clientKey) || []).filter(ts => ts > cutoff);
+  const lastAttempt = attempts[attempts.length - 1] || 0;
+  const minGapWait = lastAttempt + INFO_REQUEST_MIN_GAP_MS - now;
+
+  if (minGapWait > 0) {
+    clientInfoAttempts.set(clientKey, attempts);
+    return Math.ceil(minGapWait / 1000);
+  }
+
+  if (attempts.length >= CLIENT_INFO_MAX_REQUESTS) {
+    clientInfoAttempts.set(clientKey, attempts);
+    return Math.ceil((attempts[0] + CLIENT_INFO_WINDOW_MS - now) / 1000);
+  }
+
+  attempts.push(now);
+  clientInfoAttempts.set(clientKey, attempts);
+  return 0;
+}
+
+function setRetryHeaders(res, waitSec) {
+  res.setHeader('Retry-After', String(Math.max(1, waitSec)));
+  res.setHeader('Cache-Control', 'no-store');
+}
+
+function isYouTubeRateLimit(stderr) {
+  return /HTTP Error 429|Too Many Requests|Sign in to confirm/i.test(stderr || '');
+}
+
+function addYtdlpNetworkOptions(args) {
+  if (YTDLP_PROXY_URL) {
+    args.push('--proxy', YTDLP_PROXY_URL);
+  }
+
+  if (YTDLP_COOKIES_FILE) {
+    args.push('--cookies', YTDLP_COOKIES_FILE);
+  }
+}
+
+function safeYtdlpArgs(args) {
+  const valueToMask = new Set(['--proxy', '--cookies']);
+  return args.map((arg, index) => valueToMask.has(args[index - 1]) ? '[configured]' : arg);
+}
 
 // Extraction strategies ordered by likelihood of success on SERVER/datacenter IPs.
 // tv_embedded and android_vr are the most reliable as they bypass YouTube's
@@ -76,9 +214,10 @@ function spawnYtdlpInfo(videoUrl, strategy) {
       args.push('--cookies-from-browser', strategy.browser);
     }
 
+    addYtdlpNetworkOptions(args);
     args.push(videoUrl);
 
-    console.log(`[Info Spawn] Strategy "${strategy.name}": python ${args.join(' ')}`);
+    console.log(`[Info Spawn] Strategy "${strategy.name}": python ${safeYtdlpArgs(args).join(' ')}`);
     const child = spawn('python', args);
 
     let stdoutData = '';
@@ -142,21 +281,44 @@ function formatViews(num) {
  * API Endpoint: Fetch video metadata using smart yt-dlp strategy
  */
 app.get('/api/info', async (req, res) => {
-  const videoUrl = req.query.url;
-  if (!videoUrl) {
+  const requestedUrl = req.query.url;
+  if (!requestedUrl) {
     return res.status(400).json({ error: 'YouTube URL is required' });
   }
 
+  const videoUrl = normalizeYouTubeUrl(requestedUrl);
+  if (!videoUrl) {
+    return res.status(400).json({ error: 'Please provide a valid YouTube video URL.' });
+  }
+
   console.log(`[Metadata Request] Fetching info for: ${videoUrl}`);
+  const cacheKey = getVideoCacheKey(videoUrl);
+  const cachedInfo = getCachedInfo(cacheKey);
+  if (cachedInfo) {
+    console.log(`[Metadata Cache] Served cached info for: ${cacheKey}`);
+    return res.json(cachedInfo);
+  }
 
   // Check if we're still in a rate limit cooldown period
   const now = Date.now();
   if (now < rateLimitCooldownUntil) {
     const waitSec = Math.ceil((rateLimitCooldownUntil - now) / 1000);
     console.warn(`[Rate Limit] Still in cooldown. ${waitSec}s remaining.`);
+    setRetryHeaders(res, waitSec);
     return res.status(429).json({
       error: `YouTube rate limited your IP. Please wait ${waitSec} seconds before trying again.`,
       retryAfter: waitSec
+    });
+  }
+
+  const clientKey = getClientKey(req);
+  const clientWaitSec = getClientThrottleWaitSeconds(clientKey);
+  if (clientWaitSec > 0) {
+    console.warn(`[Client Throttle] ${clientKey} must wait ${clientWaitSec}s before another metadata request.`);
+    setRetryHeaders(res, clientWaitSec);
+    return res.status(429).json({
+      error: `Please wait ${clientWaitSec} seconds before analyzing another video.`,
+      retryAfter: clientWaitSec
     });
   }
 
@@ -188,10 +350,13 @@ app.get('/api/info', async (req, res) => {
       console.warn(`[Metadata Fail] Strategy "${strategy.name}": ${errBrief.trim()}`);
 
       // If it's a 429 rate limit, stop immediately — more requests make it worse
-      if (stderrStr.includes('HTTP Error 429') || stderrStr.includes('Too Many Requests')) {
+      if (isYouTubeRateLimit(stderrStr)) {
         hit429 = true;
-        rateLimitCooldownUntil = Date.now() + 3 * 60 * 1000; // 3 minute cooldown
-        console.warn('[Rate Limit] Got 429 — entering 3min cooldown. Stopping further attempts.');
+        lastError = err;
+        rateLimitCooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+        const cooldownSec = Math.ceil(RATE_LIMIT_COOLDOWN_MS / 1000);
+        console.warn(`[Rate Limit] YouTube blocked the request - entering ${cooldownSec}s cooldown. Stopping further attempts.`);
+        break;
       }
 
       // If browser cookie DB doesn't exist, skip silently (don't count as YouTube error)
@@ -209,12 +374,18 @@ app.get('/api/info', async (req, res) => {
   if (!successResult) {
     let errMsg = 'Could not fetch video info. Please check the URL and try again.';
     if (hit429) {
-      errMsg = 'YouTube has temporarily blocked requests from your IP (rate limit). Please wait about 1 minute and try again. Avoid clicking "Analyze" repeatedly — each click makes the wait longer.';
+      errMsg = 'YouTube has temporarily blocked requests from this server IP. Please wait before trying again. Avoid clicking "Analyze" repeatedly - each click can make the wait longer.';
     } else if (lastError && lastError.stderr && lastError.stderr.includes('Sign in to confirm')) {
       errMsg = 'YouTube is temporarily blocking this request. Please wait a minute and try again. If this keeps happening, try a different video URL.';
     }
     console.error(`[Metadata Failed] ${errMsg}`);
-    return res.status(hit429 ? 429 : 500).json({ error: errMsg });
+    if (hit429) {
+      const waitSec = Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1000));
+      setRetryHeaders(res, waitSec);
+      return res.status(429).json({ error: errMsg, retryAfter: waitSec });
+    }
+
+    return res.status(500).json({ error: errMsg });
   }
 
   try {
@@ -258,6 +429,7 @@ app.get('/api/info', async (req, res) => {
     };
 
     console.log(`[Metadata Result] Title: "${info.title}", Resolutions: [${availableResolutions.join(', ')}]`);
+    setCachedInfo(cacheKey, responseData);
     res.json(responseData);
   } catch (e) {
     console.error('Failed to parse yt-dlp JSON output:', e);
@@ -273,6 +445,32 @@ app.post('/api/download', (req, res) => {
   
   if (!url || !format || !quality) {
     return res.status(400).json({ error: 'Missing required download parameters' });
+  }
+
+  const videoUrl = normalizeYouTubeUrl(url);
+  if (!videoUrl) {
+    return res.status(400).json({ error: 'Please provide a valid YouTube video URL.' });
+  }
+
+  const allowedVideoQualities = new Set(['1080p', '720p', '480p', '360p']);
+  const allowedAudioQualities = new Set(['320k', '192k', '128k']);
+  const validFormat = format === 'video' || format === 'audio';
+  const validQuality = format === 'video'
+    ? allowedVideoQualities.has(quality)
+    : allowedAudioQualities.has(quality);
+
+  if (!validFormat || !validQuality) {
+    return res.status(400).json({ error: 'Invalid download format or quality.' });
+  }
+
+  const now = Date.now();
+  if (now < rateLimitCooldownUntil) {
+    const waitSec = Math.ceil((rateLimitCooldownUntil - now) / 1000);
+    setRetryHeaders(res, waitSec);
+    return res.status(429).json({
+      error: `YouTube rate limited your IP. Please wait ${waitSec} seconds before trying again.`,
+      retryAfter: waitSec
+    });
   }
 
   // Generate unique ID
@@ -294,7 +492,7 @@ app.post('/api/download', (req, res) => {
   console.log(`[Job Queued] ID: ${jobId}, Format: ${format}, Quality: ${quality}, Title: "${job.title}"`);
   
   // Start job execution immediately in background
-  runDownloadJob(jobId, url);
+  runDownloadJob(jobId, videoUrl);
   
   res.json({ jobId });
 });
@@ -326,6 +524,7 @@ function runDownloadJob(jobId, url) {
   if (dlStrategy.browser) {
     extraArgs.push('--cookies-from-browser', dlStrategy.browser);
   }
+  addYtdlpNetworkOptions(extraArgs);
   
   if (job.format === 'video') {
     // Select formats: best video matching chosen resolution (prefer H.264 mp4) + best audio stream (prefer m4a)
@@ -364,9 +563,10 @@ function runDownloadJob(jobId, url) {
     ];
   }
   
-  console.log(`[Job Process] Spawning: python ${args.join(' ')}`);
+  console.log(`[Job Process] Spawning: python ${safeYtdlpArgs(args).join(' ')}`);
   const child = spawn('python', args);
   job.process = child;
+  let jobStderr = '';
   
   // yt-dlp download percentage regex — matches both "45.2%" and "100%"
   const progressRegex = /\[download\]\s+(\d+(?:\.\d+)?)%/;
@@ -399,6 +599,7 @@ function runDownloadJob(jobId, url) {
   
   child.stderr.on('data', (data) => {
     const line = data.toString();
+    jobStderr += line;
     console.error(`[Job ${jobId} stderr]:`, line.trim());
 
     // yt-dlp also writes progress to stderr — parse it here too
@@ -472,7 +673,12 @@ function runDownloadJob(jobId, url) {
       // Non-zero exit: still check if the file was created (warnings can cause non-zero exit)
       if (!checkFileExists()) {
         currentJob.status = 'failed';
-        currentJob.error = `Download process failed (exit code ${code}). Try a different quality or format.`;
+        if (isYouTubeRateLimit(jobStderr)) {
+          rateLimitCooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+          currentJob.error = 'YouTube has temporarily blocked downloads from this server IP. Please wait before trying again.';
+        } else {
+          currentJob.error = `Download process failed (exit code ${code}). Try a different quality or format.`;
+        }
       }
     }
     

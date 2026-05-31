@@ -37,7 +37,23 @@ Made by **Vivek Kumar**.
     ```
     *The app will automatically start at `http://localhost:3000`*
 
-## 🛠 Tech Stack
+## Production notes
+
+Public hosts such as Render can share outbound datacenter IP ranges. If YouTube rate-limits that server IP, the app now backs off, returns `Retry-After`, caches successful metadata lookups, and prevents repeated Analyze clicks from making the block worse.
+
+Optional environment variables:
+
+*   `YOUTUBE_RATE_LIMIT_COOLDOWN_MS` - server-wide cooldown after YouTube rate-limits the app. Default: `300000`.
+*   `INFO_CACHE_TTL_MS` - metadata cache time for successful lookups. Default: `600000`.
+*   `INFO_REQUEST_MIN_GAP_MS` - minimum gap between uncached metadata requests from one client. Default: `12000`.
+*   `CLIENT_INFO_MAX_REQUESTS` - uncached metadata requests allowed per client window. Default: `3`.
+*   `CLIENT_INFO_WINDOW_MS` - client throttling window. Default: `60000`.
+*   `YTDLP_PROXY_URL` - optional HTTP/HTTPS/SOCKS proxy passed to `yt-dlp`.
+*   `QUOTAGUARDSTATIC_URL` - used as the proxy URL when `YTDLP_PROXY_URL` is not set.
+*   `YTDLP_COOKIES_FILE` - optional Netscape-format cookies file path passed to `yt-dlp`.
+
+## Tech Stack
+
 *   **Frontend:** HTML5, Vanilla CSS3 (Glassmorphism UI), Vanilla JavaScript (ES6)
 *   **Backend:** Node.js, Express.js
 *   **Core Extraction:** `yt-dlp` via Python child processes

@@ -11,7 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
     activeFormat: 'video', // 'video' | 'audio'
     selectedQuality: null,
     activeJobId: null,
-    eventSource: null
+    eventSource: null,
+    infoRetryUntil: 0,
+    infoRetryTimer: null
   };
 
   // --- DOM SELECTORS ---
@@ -27,6 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnPaste = document.getElementById('btn-paste');
   const btnClear = document.getElementById('btn-clear');
   const btnFetch = document.getElementById('btn-fetch');
+  const btnFetchLabel = btnFetch.querySelector('span');
+  const defaultFetchLabel = btnFetchLabel ? btnFetchLabel.textContent : 'Find Video';
   const infoLoader = document.getElementById('info-loader');
 
   // Config screen elements
@@ -135,6 +139,36 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function setFetchLabel(text) {
+    if (btnFetchLabel) {
+      btnFetchLabel.textContent = text;
+    }
+  }
+
+  function startAnalyzeCooldown(seconds) {
+    const waitMs = Math.max(1, Number(seconds) || 1) * 1000;
+    state.infoRetryUntil = Date.now() + waitMs;
+    if (state.infoRetryTimer) clearInterval(state.infoRetryTimer);
+
+    const tick = () => {
+      const remaining = Math.ceil((state.infoRetryUntil - Date.now()) / 1000);
+      if (remaining <= 0) {
+        clearInterval(state.infoRetryTimer);
+        state.infoRetryTimer = null;
+        state.infoRetryUntil = 0;
+        btnFetch.disabled = false;
+        setFetchLabel(defaultFetchLabel);
+        return;
+      }
+
+      btnFetch.disabled = true;
+      setFetchLabel(`Wait ${remaining}s`);
+    };
+
+    tick();
+    state.infoRetryTimer = setInterval(tick, 1000);
+  }
+
   // --- EVENT LISTENERS SETUP ---
   function setupEventListeners() {
     // Input interaction
@@ -212,6 +246,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- CONTROLLER: FETCH VIDEO DETAILS ---
   async function fetchVideoMetadata() {
+    if (Date.now() < state.infoRetryUntil) {
+      const remaining = Math.ceil((state.infoRetryUntil - Date.now()) / 1000);
+      showToast(`Please wait ${remaining} seconds before trying again.`, 'warning');
+      return;
+    }
+
     const url = inputUrl.value.trim();
     if (!url) {
       showToast('Please enter a YouTube link first', 'warning');
@@ -226,6 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Enter Loading State
     btnFetch.disabled = true;
+    setFetchLabel('Searching...');
     inputUrl.disabled = true;
     infoLoader.classList.remove('hidden');
     btnClear.classList.add('hidden');
@@ -233,10 +274,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const response = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to extract video information');
+        const retryAfter = Number(data.retryAfter) || Number(response.headers.get('Retry-After')) || 0;
+        const error = new Error(data.error || 'Failed to extract video information');
+        error.retryAfter = retryAfter;
+        error.status = response.status;
+        throw error;
       }
 
       state.videoInfo = data;
@@ -244,14 +289,20 @@ document.addEventListener('DOMContentLoaded', () => {
       showSection('config-section');
     } catch (err) {
       console.error(err);
+      if (err.retryAfter) {
+        startAnalyzeCooldown(err.retryAfter);
+      }
       showToast(err.message || 'Error fetching video data.', 'danger');
     } finally {
       // Exit Loading State
-      btnFetch.disabled = false;
       inputUrl.disabled = false;
       infoLoader.classList.add('hidden');
       if (inputUrl.value.trim() !== '') btnClear.classList.remove('hidden');
       btnPaste.disabled = false;
+      if (Date.now() >= state.infoRetryUntil) {
+        btnFetch.disabled = false;
+        setFetchLabel(defaultFetchLabel);
+      }
     }
   }
 
