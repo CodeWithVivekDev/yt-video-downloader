@@ -92,7 +92,17 @@ function spawnYtdlpInfo(videoUrl, strategy) {
     });
 
     child.on('close', (code) => {
-      if (code === 0) {
+      // yt-dlp may exit with code 1 due to non-fatal warnings (e.g., missing JS runtime)
+      // but still produce valid JSON on stdout. Resolve if we have usable output.
+      const hasJsonOutput = stdoutData.trim().startsWith('{');
+      const hasFatalError = stderrData.includes('ERROR:') ||
+                            stderrData.includes('HTTP Error') ||
+                            stderrData.includes('Sign in to confirm') ||
+                            stderrData.includes('This video is not available');
+
+      if (hasJsonOutput && !hasFatalError) {
+        resolve({ stdout: stdoutData, strategy });
+      } else if (code === 0) {
         resolve({ stdout: stdoutData, strategy });
       } else {
         reject({ code, stderr: stderrData, strategy });
