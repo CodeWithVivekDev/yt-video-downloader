@@ -439,12 +439,18 @@ body.light-mode .header-badge {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  width: 32px;
+  min-width: 32px;
   height: 32px;
+  padding: 0 0.4rem;
   border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 0.3rem;
+  font-family: var(--font-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
   transition: var(--transition-fast);
 }
 
@@ -1175,6 +1181,7 @@ body.light-mode .header-badge {
 .glow-btn {
   box-shadow: 0 0 25px rgba(16, 185, 129, 0.35);
   background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  text-decoration: none;
 }
 
 .glow-btn:hover {
@@ -1328,6 +1335,7 @@ body.light-mode .header-badge {
 .toast {
   background: var(--bg-card);
   backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--border-glass);
   padding: 1rem 1.5rem;
   border-radius: 14px;
@@ -1337,7 +1345,6 @@ body.light-mode .header-badge {
   gap: 0.75rem;
   min-width: 300px;
   max-width: 420px;
-  backdrop-filter: blur(10px);
   animation: toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   transition: var(--transition-smooth);
 }

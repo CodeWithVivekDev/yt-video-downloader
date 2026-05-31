@@ -797,6 +797,22 @@ app.get('/api/thumbnail', async (req, res) => {
     return res.status(400).send('Thumbnail image URL is required');
   }
 
+  // Validate that the URL points to a legitimate YouTube/Google image host
+  try {
+    const parsed = new URL(imageUrl);
+    const host = parsed.hostname.toLowerCase();
+    const allowedHosts = [
+      'i.ytimg.com', 'i9.ytimg.com', 'img.youtube.com',
+      'yt3.ggpht.com', 'yt3.googleusercontent.com',
+      'lh3.googleusercontent.com'
+    ];
+    if (!['http:', 'https:'].includes(parsed.protocol) || !allowedHosts.some(h => host === h || host.endsWith('.' + h))) {
+      return res.status(403).send('Only YouTube thumbnail URLs are allowed');
+    }
+  } catch (_err) {
+    return res.status(400).send('Invalid thumbnail URL');
+  }
+
   try {
     const response = await fetch(imageUrl);
     if (!response.ok) {

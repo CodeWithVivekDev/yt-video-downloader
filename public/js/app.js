@@ -465,8 +465,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const es = new EventSource(`/api/download/progress/${jobId}`);
     state.eventSource = es;
+    let sseErrorCount = 0;
+    const SSE_MAX_ERRORS = 10;
 
     es.onmessage = (event) => {
+      sseErrorCount = 0; // Reset on successful message
       try {
         const data = JSON.parse(event.data);
         const { status, progress, error } = data;
@@ -487,8 +490,15 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     es.onerror = (err) => {
+      sseErrorCount++;
       console.error('SSE Error callback:', err);
-      appendLog('Warning: Still trying to connect to download stream...', 'error');
+      if (sseErrorCount >= SSE_MAX_ERRORS) {
+        es.close();
+        appendLog('Lost connection to download stream. Please try again.', 'error');
+        handleJobFailure('Connection to the server was lost. Please try again.');
+      } else {
+        appendLog('Warning: Still trying to connect to download stream...', 'error');
+      }
     };
   }
 
@@ -570,7 +580,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Simple deduplication of downloading logs to avoid console bloat
     const lastLine = consoleLogs.lastElementChild;
-    if (lastLine && lastLine.textContent.includes('Downloading stream chunks') && text.includes('Downloading stream chunks')) {
+    if (lastLine && lastLine.textContent.includes('Downloading...') && text.includes('Downloading...')) {
       lastLine.textContent = `> ${text}`;
     } else {
       consoleLogs.appendChild(line);
